@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <cstring>
 #include <unordered_map>
 
 #if DLSS_ENABLED
@@ -92,6 +93,92 @@ namespace RT64 {
     };
 
     // Common functions.
+
+    static const char *vkResultName(VkResult result) {
+        switch (result) {
+        case VK_SUCCESS:
+            return "VK_SUCCESS";
+        case VK_NOT_READY:
+            return "VK_NOT_READY";
+        case VK_TIMEOUT:
+            return "VK_TIMEOUT";
+        case VK_EVENT_SET:
+            return "VK_EVENT_SET";
+        case VK_EVENT_RESET:
+            return "VK_EVENT_RESET";
+        case VK_INCOMPLETE:
+            return "VK_INCOMPLETE";
+        case VK_ERROR_OUT_OF_HOST_MEMORY:
+            return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+            return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED:
+            return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST:
+            return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED:
+            return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_LAYER_NOT_PRESENT:
+            return "VK_ERROR_LAYER_NOT_PRESENT";
+        case VK_ERROR_EXTENSION_NOT_PRESENT:
+            return "VK_ERROR_EXTENSION_NOT_PRESENT";
+        case VK_ERROR_FEATURE_NOT_PRESENT:
+            return "VK_ERROR_FEATURE_NOT_PRESENT";
+        case VK_ERROR_INCOMPATIBLE_DRIVER:
+            return "VK_ERROR_INCOMPATIBLE_DRIVER";
+        case VK_ERROR_TOO_MANY_OBJECTS:
+            return "VK_ERROR_TOO_MANY_OBJECTS";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED:
+            return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        case VK_ERROR_FRAGMENTED_POOL:
+            return "VK_ERROR_FRAGMENTED_POOL";
+        case VK_ERROR_UNKNOWN:
+            return "VK_ERROR_UNKNOWN";
+        case VK_ERROR_OUT_OF_POOL_MEMORY:
+            return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE:
+            return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+        case VK_ERROR_FRAGMENTATION:
+            return "VK_ERROR_FRAGMENTATION";
+        case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS:
+            return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+        case VK_ERROR_SURFACE_LOST_KHR:
+            return "VK_ERROR_SURFACE_LOST_KHR";
+        case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
+            return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+        case VK_SUBOPTIMAL_KHR:
+            return "VK_SUBOPTIMAL_KHR";
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            return "VK_ERROR_OUT_OF_DATE_KHR";
+        case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR:
+            return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+        case VK_ERROR_VALIDATION_FAILED_EXT:
+            return "VK_ERROR_VALIDATION_FAILED_EXT";
+        default:
+            return "VK_RESULT_UNKNOWN";
+        }
+    }
+
+    static const char *vkDeviceTypeName(VkPhysicalDeviceType type) {
+        switch (type) {
+        case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+            return "OTHER";
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            return "INTEGRATED_GPU";
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            return "DISCRETE_GPU";
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+            return "VIRTUAL_GPU";
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:
+            return "CPU";
+        default:
+            return "UNKNOWN";
+        }
+    }
+
+    static void logVulkanApiVersion(const char *prefix, uint32_t version) {
+        fprintf(stderr, "%s%u.%u.%u\n", prefix, VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version), VK_VERSION_PATCH(version));
+    }
 
     static uint32_t roundUp(uint32_t value, uint32_t powerOf2Alignment) {
         return (value + powerOf2Alignment - 1) & ~(powerOf2Alignment - 1);
@@ -3505,6 +3592,14 @@ namespace RT64 {
         for (uint32_t i = 0; i < deviceCount; i++) {
             VkPhysicalDeviceProperties deviceProperties;
             vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
+            fprintf(stderr, "Vulkan physical device %u: \"%s\", vendor=0x%X, device=0x%X, type=%s, driver=0x%X.\n",
+                i,
+                deviceProperties.deviceName,
+                deviceProperties.vendorID,
+                deviceProperties.deviceID,
+                vkDeviceTypeName(deviceProperties.deviceType),
+                deviceProperties.driverVersion);
+            logVulkanApiVersion("Vulkan physical device API version: ", deviceProperties.apiVersion);
 
             uint32_t deviceTypeIndex = deviceProperties.deviceType;
             if (deviceTypeIndex > 4) {
@@ -3528,6 +3623,9 @@ namespace RT64 {
             return;
         }
 
+        // Store properties.
+        vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+
         // Check for extensions.
         uint32_t extensionCount;
         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
@@ -3536,6 +3634,7 @@ namespace RT64 {
         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, availableExtensions.data());
 
         std::unordered_set<std::string> missingRequiredExtensions = RequiredDeviceExtensions;
+        std::unordered_set<std::string> supportedRequiredExtensions;
         std::unordered_set<std::string> supportedOptionalExtensions;
 #   if DLSS_ENABLED
         const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredDeviceExtensionsVulkan(this);
@@ -3544,7 +3643,10 @@ namespace RT64 {
             const std::string extensionName(availableExtensions[i].extensionName);
             missingRequiredExtensions.erase(extensionName);
 
-            if (OptionalDeviceExtensions.find(extensionName) != OptionalDeviceExtensions.end()) {
+            if (RequiredDeviceExtensions.find(extensionName) != RequiredDeviceExtensions.end()) {
+                supportedRequiredExtensions.insert(extensionName);
+            }
+            else if (OptionalDeviceExtensions.find(extensionName) != OptionalDeviceExtensions.end()) {
                 supportedOptionalExtensions.insert(extensionName);
             }
 #       if DLSS_ENABLED
@@ -3552,6 +3654,18 @@ namespace RT64 {
                 supportedOptionalExtensions.insert(extensionName);
             }
 #       endif
+        }
+
+        const bool vulkan12Core = (VK_VERSION_MAJOR(physicalDeviceProperties.apiVersion) > 1) || ((VK_VERSION_MAJOR(physicalDeviceProperties.apiVersion) == 1) && (VK_VERSION_MINOR(physicalDeviceProperties.apiVersion) >= 2));
+        if (vulkan12Core) {
+            const bool descriptorIndexingCore = missingRequiredExtensions.erase(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) > 0;
+            const bool scalarBlockLayoutCore = missingRequiredExtensions.erase(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME) > 0;
+            if (descriptorIndexingCore) {
+                fprintf(stderr, "Required extension %s is not advertised; accepting Vulkan 1.2 core descriptor indexing path.\n", VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+            }
+            if (scalarBlockLayoutCore) {
+                fprintf(stderr, "Required extension %s is not advertised; accepting Vulkan 1.2 core scalar block layout path.\n", VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+            }
         }
 
         if (!missingRequiredExtensions.empty()) {
@@ -3562,9 +3676,6 @@ namespace RT64 {
             fprintf(stderr, "Unable to create device. Required extensions are missing.\n");
             return;
         }
-
-        // Store properties.
-        vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
 
         // Check for supported features.
         void *featuresChain = nullptr;
@@ -3594,6 +3705,11 @@ namespace RT64 {
         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         deviceFeatures.pNext = featuresChain;
         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
+        fprintf(stderr, "Vulkan selected device: \"%s\".\n", physicalDeviceProperties.deviceName);
+        fprintf(stderr, "Vulkan feature scalarBlockLayout=%u.\n", layoutFeatures.scalarBlockLayout);
+        fprintf(stderr, "Vulkan feature descriptorBindingPartiallyBound=%u.\n", indexingFeatures.descriptorBindingPartiallyBound);
+        fprintf(stderr, "Vulkan feature descriptorBindingVariableDescriptorCount=%u.\n", indexingFeatures.descriptorBindingVariableDescriptorCount);
+        fprintf(stderr, "Vulkan feature runtimeDescriptorArray=%u.\n", indexingFeatures.runtimeDescriptorArray);
 
         void *createDeviceChain = nullptr;
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures = {};
@@ -3674,10 +3790,16 @@ namespace RT64 {
         std::vector<bool> queueFamilyUsed(queueFamilyCount, false);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilyProperties.data());
 
+        fprintf(stderr, "Vulkan queue family count: %u.\n", queueFamilyCount);
+        for (uint32_t i = 0; i < queueFamilyCount; i++) {
+            fprintf(stderr, "Vulkan queue family %u: flags=0x%X, count=%u.\n", i, queueFamilyProperties[i].queueFlags, queueFamilyProperties[i].queueCount);
+        }
+
         auto pickFamilyQueue = [&](RenderCommandListType type, VkQueueFlags flags) {
             uint32_t familyIndex = 0;
             uint32_t familySetBits = sizeof(uint32_t) * 8;
             uint32_t familyQueueCount = 0;
+            bool foundFamily = false;
             for (uint32_t i = 0; i < queueFamilyCount; i++) {
                 const VkQueueFamilyProperties &props = queueFamilyProperties[i];
 
@@ -3692,17 +3814,27 @@ namespace RT64 {
                     familyIndex = i;
                     familySetBits = setBits;
                     familyQueueCount = props.queueCount;
+                    foundFamily = true;
                 }
+            }
+
+            if (!foundFamily) {
+                fprintf(stderr, "Unable to find Vulkan queue family for command list type %u with flags 0x%X.\n", uint32_t(type), flags);
+                return false;
             }
 
             queueFamilyIndices[toFamilyIndex(type)] = familyIndex;
             queueFamilyUsed[familyIndex] = true;
+            return true;
         };
 
         // Pick the family queues for each type of command list.
-        pickFamilyQueue(RenderCommandListType::DIRECT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
-        pickFamilyQueue(RenderCommandListType::COMPUTE, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
-        pickFamilyQueue(RenderCommandListType::COPY, VK_QUEUE_TRANSFER_BIT);
+        const bool foundDirectQueue = pickFamilyQueue(RenderCommandListType::DIRECT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
+        const bool foundComputeQueue = pickFamilyQueue(RenderCommandListType::COMPUTE, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
+        const bool foundCopyQueue = pickFamilyQueue(RenderCommandListType::COPY, VK_QUEUE_TRANSFER_BIT);
+        if (!foundDirectQueue || !foundComputeQueue || !foundCopyQueue) {
+            return;
+        }
 
         // Create the struct to store the virtual queues.
         queueFamilies.resize(queueFamilyCount);
@@ -3724,7 +3856,7 @@ namespace RT64 {
         }
 
         std::vector<const char *> enabledExtensions;
-        for (const std::string &extension : RequiredDeviceExtensions) {
+        for (const std::string &extension : supportedRequiredExtensions) {
             enabledExtensions.push_back(extension.c_str());
         }
 
@@ -3743,7 +3875,7 @@ namespace RT64 {
 
         VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
+            fprintf(stderr, "vkCreateDevice failed with error code 0x%X (%s).\n", res, vkResultName(res));
             return;
         }
 
