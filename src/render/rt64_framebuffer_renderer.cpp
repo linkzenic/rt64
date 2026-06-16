@@ -1342,7 +1342,7 @@ namespace RT64 {
 
     void FramebufferRenderer::addFramebuffer(const DrawParams &p) {
         assert(p.fbStorage != nullptr);
-        
+
         // Setup framebuffer pair data and descriptor set.
         const FramebufferPair &fbPair = p.curWorkload->fbPairs[p.fbPairIndex];
         interop::FramebufferParams fbParams;

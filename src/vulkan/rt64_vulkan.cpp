@@ -253,6 +253,17 @@ namespace RT64 {
         }
     }
 
+    static RenderFormat fromVkSurfaceFormat(VkFormat format, RenderFormat fallback) {
+        switch (format) {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+            return RenderFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_UNORM:
+            return RenderFormat::B8G8R8A8_UNORM;
+        default:
+            return fallback;
+        }
+    }
+
     static VkImageType toImageType(RenderTextureDimension dimension) {
         switch (dimension) {
         case RenderTextureDimension::TEXTURE_1D:
@@ -1839,6 +1850,10 @@ namespace RT64 {
             imageInfo.imageView = (interfaceTexture != nullptr) ? interfaceTexture->imageView : VK_NULL_HANDLE;
         }
 
+        if (imageInfo.imageView == VK_NULL_HANDLE) {
+            return;
+        }
+
         setDescriptor(descriptorIndex, nullptr, &imageInfo, nullptr, nullptr);
     }
 
@@ -1872,6 +1887,11 @@ namespace RT64 {
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
         const uint32_t bindingIndex = setLayout->descriptorBindingIndices[descriptorIndex];
         const VkDescriptorSetLayoutBinding &setLayoutBinding = setLayout->setBindings[bindingIndex];
+
+        if (vk == VK_NULL_HANDLE) {
+            return;
+        }
+
         VkWriteDescriptorSet writeDescriptor = {};
         writeDescriptor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writeDescriptor.pNext = pNext;
@@ -2030,7 +2050,6 @@ namespace RT64 {
 
         std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
         vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats.data());
-
         uint32_t presentModeCount = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
 
@@ -2049,8 +2068,17 @@ namespace RT64 {
         }
 
         if (compatibleSurfaceFormats.empty()) {
+#if defined(__ANDROID__)
+            if (surfaceFormatCount > 0) {
+                compatibleSurfaceFormats.emplace_back(surfaceFormats[0]);
+                this->format = fromVkSurfaceFormat(surfaceFormats[0].format, format);
+            }
+            else
+#endif
+            {
             fprintf(stderr, "No compatible surface formats were found.\n");
             return;
+            }
         }
 
         // Pick the preferred color space, if not available, pick whatever first shows up on the list.
@@ -2064,6 +2092,10 @@ namespace RT64 {
         if (pickedSurfaceFormat.format == VK_FORMAT_UNDEFINED) {
             pickedSurfaceFormat = compatibleSurfaceFormats[0];
         }
+
+#if defined(__ANDROID__)
+        this->format = fromVkSurfaceFormat(pickedSurfaceFormat.format, this->format);
+#endif
 
         // FIFO is guaranteed to be supported.
         requiredPresentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -2127,7 +2159,6 @@ namespace RT64 {
             const std::scoped_lock queueLock(*commandQueue->queue->mutex);
             res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
         }
-
         // Handle the error silently.
 #if defined(__APPLE__)
         // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
@@ -2165,6 +2196,12 @@ namespace RT64 {
         // We don't actually need to query the surface capabilities but the validation layer seems to cache the valid extents from this call.
         VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
+#if defined(__ANDROID__)
+        if (surfaceCapabilities.currentExtent.width != UINT32_MAX && surfaceCapabilities.currentExtent.height != UINT32_MAX) {
+            width = surfaceCapabilities.currentExtent.width;
+            height = surfaceCapabilities.currentExtent.height;
+        }
+#endif
 
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         createInfo.surface = surface;
@@ -2187,7 +2224,6 @@ namespace RT64 {
             fprintf(stderr, "vkCreateSwapchainKHR failed with error code 0x%X.\n", res);
             return false;
         }
-
         // Store the chosen present mode to identify later whether the swapchain needs to be recreated.
         createdPresentMode = requiredPresentMode;
 
@@ -2222,7 +2258,7 @@ namespace RT64 {
         for (uint32_t i = 0; i < textureCount; i++) {
             textures[i] = VulkanTexture(commandQueue->device, images[i]);
             textures[i].desc.dimension = RenderTextureDimension::TEXTURE_2D;
-            textures[i].desc.format = format;
+            textures[i].desc.format = this->format;
             textures[i].desc.width = width;
             textures[i].desc.height = height;
             textures[i].desc.depth = 1;
@@ -2791,12 +2827,28 @@ namespace RT64 {
     }
 
     void VulkanCommandList::setScissors(const RenderRect *scissorRects, uint32_t count) {
+        auto toVkScissor = [this](const RenderRect &rect) {
+            int32_t left = rect.left;
+            int32_t top = rect.top;
+            int32_t right = rect.right;
+            int32_t bottom = rect.bottom;
+
+            if (targetFramebuffer != nullptr) {
+                left = std::clamp(left, 0, int32_t(targetFramebuffer->width));
+                top = std::clamp(top, 0, int32_t(targetFramebuffer->height));
+                right = std::clamp(right, left, int32_t(targetFramebuffer->width));
+                bottom = std::clamp(bottom, top, int32_t(targetFramebuffer->height));
+            }
+
+            return VkRect2D{ VkOffset2D{ left, top }, VkExtent2D{ uint32_t(right - left), uint32_t(bottom - top) } };
+        };
+
         if (count > 1) {
             thread_local std::vector<VkRect2D> scissorVector;
             scissorVector.clear();
 
             for (uint32_t i = 0; i < count; i++) {
-                scissorVector.emplace_back(VkRect2D{ VkOffset2D{ scissorRects[i].left, scissorRects[i].top }, VkExtent2D{ uint32_t(scissorRects[i].right - scissorRects[i].left), uint32_t(scissorRects[i].bottom - scissorRects[i].top) } });
+                scissorVector.emplace_back(toVkScissor(scissorRects[i]));
             }
 
             if (!scissorVector.empty()) {
@@ -2805,7 +2857,7 @@ namespace RT64 {
         }
         else {
             // Single element fast path.
-            VkRect2D scissor = VkRect2D{ VkOffset2D{ scissorRects[0].left, scissorRects[0].top }, VkExtent2D{ uint32_t(scissorRects[0].right - scissorRects[0].left), uint32_t(scissorRects[0].bottom - scissorRects[0].top) } };
+            VkRect2D scissor = toVkScissor(scissorRects[0]);
             vkCmdSetScissor(vk, 0, 1, &scissor);
         }
     }

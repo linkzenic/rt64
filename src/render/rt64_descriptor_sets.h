@@ -291,7 +291,11 @@ namespace RT64 {
     };
 
     struct FramebufferRendererDescriptorTextureSet : RenderDescriptorSetBase {
+#if defined(__ANDROID__)
+        static const int UpperRange = 1024;
+#else
         static const int UpperRange = 8192;
+#endif
 
         uint32_t textureCacheSize = 0;
         uint32_t gTextures;
@@ -303,7 +307,11 @@ namespace RT64 {
             builder.begin();
             gTextures = builder.addTexture(0, UpperRange);
             gTMEM = gTextures;
+#if defined(__ANDROID__)
+            builder.end();
+#else
             builder.end(true, textureCacheSize);
+#endif
 
             if (device != nullptr) {
                 create(device);
