@@ -8,9 +8,13 @@
 #include "rt64_vulkan.h"
 
 #include <algorithm>
+#include <cstdarg>
 #include <cmath>
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 
 #if DLSS_ENABLED
@@ -176,8 +180,41 @@ namespace RT64 {
         }
     }
 
+    static std::string VulkanDeviceDiagnostics;
+
+    static void appendVulkanDeviceDiagnostic(const char *format, ...) {
+        char message[2048];
+
+        va_list args;
+        va_start(args, format);
+        vsnprintf(message, sizeof(message), format, args);
+        va_end(args);
+
+        fprintf(stderr, "%s", message);
+        VulkanDeviceDiagnostics += message;
+    }
+
+    static void writeVulkanDeviceDiagnosticFile(const char *reason) {
+        const char *appFolderPath = std::getenv("APP_FOLDER_PATH");
+        if ((appFolderPath == nullptr) || (appFolderPath[0] == '\0')) {
+            return;
+        }
+
+        const std::string outputPath = std::string(appFolderPath) + "/vulkan_device_error.txt";
+        FILE *file = fopen(outputPath.c_str(), "w");
+        if (file == nullptr) {
+            fprintf(stderr, "Failed to write Vulkan device diagnostic file: %s.\n", outputPath.c_str());
+            return;
+        }
+
+        fprintf(file, "Zelda64 Recompiled Android Vulkan device error\n\n");
+        fprintf(file, "Reason: %s\n\n", reason);
+        fprintf(file, "%s", VulkanDeviceDiagnostics.c_str());
+        fclose(file);
+    }
+
     static void logVulkanApiVersion(const char *prefix, uint32_t version) {
-        fprintf(stderr, "%s%u.%u.%u\n", prefix, VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version), VK_VERSION_PATCH(version));
+        appendVulkanDeviceDiagnostic("%s%u.%u.%u\n", prefix, VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version), VK_VERSION_PATCH(version));
     }
 
     static uint32_t roundUp(uint32_t value, uint32_t powerOf2Alignment) {
@@ -3569,11 +3606,13 @@ namespace RT64 {
         assert(renderInterface != nullptr);
 
         this->renderInterface = renderInterface;
+        VulkanDeviceDiagnostics.clear();
 
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, nullptr);
         if (deviceCount == 0) {
-            fprintf(stderr, "Unable to find devices that support Vulkan.\n");
+            appendVulkanDeviceDiagnostic("Unable to find devices that support Vulkan.\n");
+            writeVulkanDeviceDiagnosticFile("No Vulkan physical devices were reported by the driver.");
             return;
         }
 
@@ -3592,7 +3631,7 @@ namespace RT64 {
         for (uint32_t i = 0; i < deviceCount; i++) {
             VkPhysicalDeviceProperties deviceProperties;
             vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
-            fprintf(stderr, "Vulkan physical device %u: \"%s\", vendor=0x%X, device=0x%X, type=%s, driver=0x%X.\n",
+            appendVulkanDeviceDiagnostic("Vulkan physical device %u: \"%s\", vendor=0x%X, device=0x%X, type=%s, driver=0x%X.\n",
                 i,
                 deviceProperties.deviceName,
                 deviceProperties.vendorID,
@@ -3619,7 +3658,8 @@ namespace RT64 {
         }
 
         if (physicalDevice == VK_NULL_HANDLE) {
-            fprintf(stderr, "Unable to find a device with the required features.\n");
+            appendVulkanDeviceDiagnostic("Unable to find a device with the required features.\n");
+            writeVulkanDeviceDiagnosticFile("No physical device survived RT64 device selection.");
             return;
         }
 
@@ -3661,19 +3701,20 @@ namespace RT64 {
             const bool descriptorIndexingCore = missingRequiredExtensions.erase(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) > 0;
             const bool scalarBlockLayoutCore = missingRequiredExtensions.erase(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME) > 0;
             if (descriptorIndexingCore) {
-                fprintf(stderr, "Required extension %s is not advertised; accepting Vulkan 1.2 core descriptor indexing path.\n", VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+                appendVulkanDeviceDiagnostic("Required extension %s is not advertised; accepting Vulkan 1.2 core descriptor indexing path.\n", VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
             }
             if (scalarBlockLayoutCore) {
-                fprintf(stderr, "Required extension %s is not advertised; accepting Vulkan 1.2 core scalar block layout path.\n", VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+                appendVulkanDeviceDiagnostic("Required extension %s is not advertised; accepting Vulkan 1.2 core scalar block layout path.\n", VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
             }
         }
 
         if (!missingRequiredExtensions.empty()) {
             for (const std::string &extension : missingRequiredExtensions) {
-                fprintf(stderr, "Missing required extension: %s.\n", extension.c_str());
+                appendVulkanDeviceDiagnostic("Missing required extension: %s.\n", extension.c_str());
             }
 
-            fprintf(stderr, "Unable to create device. Required extensions are missing.\n");
+            appendVulkanDeviceDiagnostic("Unable to create device. Required extensions are missing.\n");
+            writeVulkanDeviceDiagnosticFile("Required Vulkan device extensions are missing.");
             return;
         }
 
@@ -3705,11 +3746,11 @@ namespace RT64 {
         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         deviceFeatures.pNext = featuresChain;
         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
-        fprintf(stderr, "Vulkan selected device: \"%s\".\n", physicalDeviceProperties.deviceName);
-        fprintf(stderr, "Vulkan feature scalarBlockLayout=%u.\n", layoutFeatures.scalarBlockLayout);
-        fprintf(stderr, "Vulkan feature descriptorBindingPartiallyBound=%u.\n", indexingFeatures.descriptorBindingPartiallyBound);
-        fprintf(stderr, "Vulkan feature descriptorBindingVariableDescriptorCount=%u.\n", indexingFeatures.descriptorBindingVariableDescriptorCount);
-        fprintf(stderr, "Vulkan feature runtimeDescriptorArray=%u.\n", indexingFeatures.runtimeDescriptorArray);
+        appendVulkanDeviceDiagnostic("Vulkan selected device: \"%s\".\n", physicalDeviceProperties.deviceName);
+        appendVulkanDeviceDiagnostic("Vulkan feature scalarBlockLayout=%u.\n", layoutFeatures.scalarBlockLayout);
+        appendVulkanDeviceDiagnostic("Vulkan feature descriptorBindingPartiallyBound=%u.\n", indexingFeatures.descriptorBindingPartiallyBound);
+        appendVulkanDeviceDiagnostic("Vulkan feature descriptorBindingVariableDescriptorCount=%u.\n", indexingFeatures.descriptorBindingVariableDescriptorCount);
+        appendVulkanDeviceDiagnostic("Vulkan feature runtimeDescriptorArray=%u.\n", indexingFeatures.runtimeDescriptorArray);
 
         void *createDeviceChain = nullptr;
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures = {};
@@ -3790,9 +3831,9 @@ namespace RT64 {
         std::vector<bool> queueFamilyUsed(queueFamilyCount, false);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilyProperties.data());
 
-        fprintf(stderr, "Vulkan queue family count: %u.\n", queueFamilyCount);
+        appendVulkanDeviceDiagnostic("Vulkan queue family count: %u.\n", queueFamilyCount);
         for (uint32_t i = 0; i < queueFamilyCount; i++) {
-            fprintf(stderr, "Vulkan queue family %u: flags=0x%X, count=%u.\n", i, queueFamilyProperties[i].queueFlags, queueFamilyProperties[i].queueCount);
+            appendVulkanDeviceDiagnostic("Vulkan queue family %u: flags=0x%X, count=%u.\n", i, queueFamilyProperties[i].queueFlags, queueFamilyProperties[i].queueCount);
         }
 
         auto pickFamilyQueue = [&](RenderCommandListType type, VkQueueFlags flags) {
@@ -3819,7 +3860,7 @@ namespace RT64 {
             }
 
             if (!foundFamily) {
-                fprintf(stderr, "Unable to find Vulkan queue family for command list type %u with flags 0x%X.\n", uint32_t(type), flags);
+                appendVulkanDeviceDiagnostic("Unable to find Vulkan queue family for command list type %u with flags 0x%X.\n", uint32_t(type), flags);
                 return false;
             }
 
@@ -3833,6 +3874,7 @@ namespace RT64 {
         const bool foundComputeQueue = pickFamilyQueue(RenderCommandListType::COMPUTE, VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
         const bool foundCopyQueue = pickFamilyQueue(RenderCommandListType::COPY, VK_QUEUE_TRANSFER_BIT);
         if (!foundDirectQueue || !foundComputeQueue || !foundCopyQueue) {
+            writeVulkanDeviceDiagnosticFile("Required Vulkan queue families are missing.");
             return;
         }
 
@@ -3875,7 +3917,8 @@ namespace RT64 {
 
         VkResult res = vkCreateDevice(physicalDevice, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vkCreateDevice failed with error code 0x%X (%s).\n", res, vkResultName(res));
+            appendVulkanDeviceDiagnostic("vkCreateDevice failed with error code 0x%X (%s).\n", res, vkResultName(res));
+            writeVulkanDeviceDiagnosticFile("vkCreateDevice failed.");
             return;
         }
 
@@ -3916,7 +3959,8 @@ namespace RT64 {
 
         res = vmaCreateAllocator(&allocatorInfo, &allocator);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vmaCreateAllocator failed with error code 0x%X.\n", res);
+            appendVulkanDeviceDiagnostic("vmaCreateAllocator failed with error code 0x%X (%s).\n", res, vkResultName(res));
+            writeVulkanDeviceDiagnosticFile("Vulkan memory allocator creation failed.");
             release();
             return;
         }
