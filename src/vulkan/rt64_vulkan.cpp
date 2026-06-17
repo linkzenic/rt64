@@ -3836,6 +3836,15 @@ namespace RT64 {
             appendVulkanDeviceDiagnostic("Vulkan queue family %u: flags=0x%X, count=%u.\n", i, queueFamilyProperties[i].queueFlags, queueFamilyProperties[i].queueCount);
         }
 
+        auto queueFamilySupportsFlags = [](VkQueueFlags queueFlags, VkQueueFlags requiredFlags) {
+            VkQueueFlags effectiveQueueFlags = queueFlags;
+            if ((effectiveQueueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0) {
+                effectiveQueueFlags |= VK_QUEUE_TRANSFER_BIT;
+            }
+
+            return (effectiveQueueFlags & requiredFlags) == requiredFlags;
+        };
+
         auto pickFamilyQueue = [&](RenderCommandListType type, VkQueueFlags flags) {
             uint32_t familyIndex = 0;
             uint32_t familySetBits = sizeof(uint32_t) * 8;
@@ -3845,7 +3854,9 @@ namespace RT64 {
                 const VkQueueFamilyProperties &props = queueFamilyProperties[i];
 
                 // The family queue flags must contain all the flags required by the command list type.
-                if ((props.queueFlags & flags) != flags) {
+                // Vulkan guarantees transfer support for graphics and compute queues even if the transfer
+                // bit is not explicitly reported, which is common on some Android drivers.
+                if (!queueFamilySupportsFlags(props.queueFlags, flags)) {
                     continue;
                 }
 
