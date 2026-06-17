@@ -130,8 +130,9 @@ namespace RT64 {
         const uint32_t MinimumReferenceHeight = 60;
         const uint32_t referenceHeight = (viFbSize[1] > 0) ? std::max(viFbSize[1], MinimumReferenceHeight) : 240;
 
-        // Compute the aspect ratio to be used for the frame.
-        workloadConfig.aspectRatioSource = (viFbSize[1] > 0) ? float(viFbSize[0]) / float(viFbSize[1]) : (4.0f / 3.0f);
+        // Compute the aspect ratio to be used for the frame. Zelda's widescreen HUD patches assume
+        // the N64's 4:3 presentation space even when the VI framebuffer height has a few extra rows.
+        workloadConfig.aspectRatioSource = (4.0f / 3.0f);
 
         const auto ratioMode = ext.sharedResources->userConfig.aspectRatio;
         switch (ratioMode) {
@@ -634,7 +635,12 @@ namespace RT64 {
                     drawParams.aspectRatioSource = workloadConfig.aspectRatioSource;
                     drawParams.aspectRatioTarget = workloadConfig.aspectRatioTarget;
                     drawParams.extAspectPercentage = workloadConfig.extAspectPercentage;
-                    drawParams.horizontalMisalignment = (colorTarget != nullptr) ? float(colorTarget->misalignX) : float(depthTarget->misalignX);
+                    const float horizontalMisalignment = (colorTarget != nullptr) ? float(colorTarget->misalignX) : float(depthTarget->misalignX);
+#if defined(__ANDROID__)
+                    drawParams.horizontalMisalignment = (workloadConfig.aspectRatioScale != 1.0f) ? 0.0f : horizontalMisalignment;
+#else
+                    drawParams.horizontalMisalignment = horizontalMisalignment;
+#endif
                     drawParams.presetScene = curFrame.presetScene;
                     drawParams.rtEnabled = workloadConfig.raytracingEnabled;
                     drawParams.submissionFrame = workload.submissionFrame;
