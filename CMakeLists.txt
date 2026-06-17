@@ -72,7 +72,9 @@ set(ZSTD_BUILD_SHARED OFF)
 
 add_subdirectory(src/tools/file_to_c)
 add_subdirectory(src/contrib/re-spirv)
-add_subdirectory(src/contrib/nativefiledialog-extended)
+if (NOT TARGET nfd)
+    add_subdirectory(src/contrib/nativefiledialog-extended)
+endif()
 add_subdirectory(src/contrib/zstd/build/cmake)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
