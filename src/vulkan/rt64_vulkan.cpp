@@ -49,6 +49,13 @@ namespace RT64 {
     // so they're not under the limit set by the device or the backend.
     static const uint32_t MaxQueuesPerFamilyCount = 4;
 
+    static const uint32_t VulkanVendorQualcomm = 0x5143;
+    static const uint32_t VulkanVendorArm = 0x13B5;
+
+    static bool vulkanDeviceNameContains(const VkPhysicalDeviceProperties &properties, const char *needle) {
+        return std::string(properties.deviceName).find(needle) != std::string::npos;
+    }
+
     // Required extensions.
 
     static const std::unordered_set<std::string> RequiredInstanceExtensions = {
@@ -3666,6 +3673,23 @@ namespace RT64 {
         // Store properties.
         vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
 
+#   ifdef __ANDROID__
+        const bool androidAdrenoDevice = (physicalDeviceProperties.vendorID == VulkanVendorQualcomm) || vulkanDeviceNameContains(physicalDeviceProperties, "Adreno");
+        const bool androidMaliDevice = (physicalDeviceProperties.vendorID == VulkanVendorArm) || vulkanDeviceNameContains(physicalDeviceProperties, "Mali");
+        const bool androidConservativeVulkan = !androidAdrenoDevice;
+        if (androidAdrenoDevice) {
+            appendVulkanDeviceDiagnostic("Android Vulkan profile: Adreno/default.\n");
+        }
+        else if (androidMaliDevice) {
+            appendVulkanDeviceDiagnostic("Android Vulkan profile: Mali/conservative optional features.\n");
+        }
+        else {
+            appendVulkanDeviceDiagnostic("Android Vulkan profile: non-Adreno/conservative optional features.\n");
+        }
+#   else
+        const bool androidConservativeVulkan = false;
+#   endif
+
         // Check for extensions.
         uint32_t extensionCount;
         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
@@ -3784,9 +3808,9 @@ namespace RT64 {
 #   ifdef __linux__
          // There's a known issue where some Intel GPUs under Mesa currently report sample locations as supported but they'll crash
          // when creating a pipeline that uses them. The current family of hardware or driver versions affected is currently unknown.
-         const bool sampleLocationsBroken = (description.vendor == RenderDeviceVendor::INTEL);
+         const bool sampleLocationsBroken = androidConservativeVulkan || (description.vendor == RenderDeviceVendor::INTEL);
 #   else
-         const bool sampleLocationsBroken = false;
+         const bool sampleLocationsBroken = androidConservativeVulkan;
 #   endif
 
          // TODO: Technically, checking this on its own is not enough to know whether the feature is supported. This requires a
@@ -3814,7 +3838,7 @@ namespace RT64 {
             createDeviceChain = &layoutFeatures;
         }
 
-        const bool presentWait = presentIdFeatures.presentId && presentWaitFeatures.presentWait;
+        const bool presentWait = !androidConservativeVulkan && presentIdFeatures.presentId && presentWaitFeatures.presentWait;
         if (presentWait) {
             presentIdFeatures.pNext = createDeviceChain;
             createDeviceChain = &presentIdFeatures;
@@ -3996,12 +4020,12 @@ namespace RT64 {
         capabilities.descriptorIndexing = descriptorIndexing;
         capabilities.scalarBlockLayout = scalarBlockLayout;
         capabilities.presentWait = presentWait;
-        capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        capabilities.displayTiming = !androidConservativeVulkan && (supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end());
         capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
         capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
 
         // Fill Vulkan-only capabilities.
-        loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        loadStoreOpNoneSupported = !androidConservativeVulkan && (supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end());
     }
 
     VulkanDevice::~VulkanDevice() {
