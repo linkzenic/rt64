@@ -12,6 +12,13 @@
 #include "common/rt64_elapsed_timer.h"
 #include "common/rt64_math.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define RT64_ANDROID_APP_LOG(...) ((void)0)
+#else
+#define RT64_ANDROID_APP_LOG(...)
+#endif
+
 #if RT_ENABLED
 #   include "res/bluenoise/LDR_64_64_64_RGB1.h"
 #endif
@@ -316,7 +323,11 @@ namespace RT64 {
         // Create the swap chain with the texture count specified from the configuration.
         RenderSwapChainDesc swapChainDesc;
         swapChainDesc.renderWindow = appWindow->windowHandle;
+#if defined(__ANDROID__)
+        swapChainDesc.format = RenderFormat::R8G8B8A8_UNORM;
+#else
         swapChainDesc.format = RenderFormat::B8G8R8A8_UNORM;
+#endif
         swapChainDesc.textureCount = (userConfig.displayBuffering == UserConfiguration::DisplayBuffering::Triple) ? 3 : 2;
 
         // Enable present wait if supported by the device. We specify a max latency of 1 as we use it to wait right before the next
@@ -485,7 +496,13 @@ namespace RT64 {
 #       endif
 
             if (isHLE) {
+#if defined(__ANDROID__)
+                RT64_ANDROID_APP_LOG("Application::processDisplayLists before interpreter start=0x%08X", dlStartAddress);
+#endif
                 interpreter->processDisplayLists(dlStartAddress, dlStart);
+#if defined(__ANDROID__)
+                RT64_ANDROID_APP_LOG("Application::processDisplayLists after interpreter start=0x%08X", dlStartAddress);
+#endif
             }
             else {
                 interpreter->processRDPLists(dlStartAddress, dlStart, dlEnd);

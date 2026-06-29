@@ -15,6 +15,8 @@
 #include "rt64_interpreter.h"
 #include "rt64_state.h"
 
+#define RT64_ANDROID_RSP_LOG(...)
+
 //#define LOG_SPECIAL_MATRIX_OPERATIONS
 
 namespace RT64 {
@@ -127,8 +129,18 @@ namespace RT64 {
     }
 
     void RSP::setSegment(uint32_t seg, uint32_t address) {
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setSegment begin seg=%u address=0x%08X", seg, address);
+#endif
         assert(seg < RSP_MAX_SEGMENTS);
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setSegment after assert seg=%u this=%p segments=%p", seg, static_cast<void *>(this), static_cast<void *>(segments.data()));
+#endif
         segments[seg] = address;
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setSegment after store seg=%u value=0x%08X", seg, segments[seg]);
+        RT64_ANDROID_RSP_LOG("rsp_setSegment end seg=%u address=0x%08X", seg, address);
+#endif
     }
 
     void RSP::matrixCommon(const hlslpp::float4x4 &floatMatrix, uint32_t address, uint8_t params) {
@@ -950,9 +962,21 @@ namespace RT64 {
     }
 
     void RSP::setClipRatioEdge(uint8_t index, int16_t value) {
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setClipRatioEdge begin index=%u value=%d this=%p clips=%p", index, value, static_cast<void *>(this), static_cast<void *>(clipRatios.data()));
+#endif
         assert(index < clipRatios.size());
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setClipRatioEdge after assert index=%u", index);
+#endif
         clipRatios[index] = value;
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setClipRatioEdge after store index=%u stored=%d", index, clipRatios[index]);
+#endif
         viewportChanged = true;
+#if defined(__ANDROID__)
+        RT64_ANDROID_RSP_LOG("rsp_setClipRatioEdge end index=%u viewportChanged=%d", index, viewportChanged ? 1 : 0);
+#endif
     }
 
     void RSP::setClipRatioAll(int16_t value) {

@@ -15,6 +15,13 @@
 #include "rt64_interpreter.h"
 #include "rt64_state.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define RT64_ANDROID_RDP_LOG(...) ((void)0)
+#else
+#define RT64_ANDROID_RDP_LOG(...)
+#endif
+
 #ifndef NDEBUG
 //#   define ASSERT_LOAD_METHODS
 //#   define LOG_FILLRECT_METHODS
@@ -1045,6 +1052,22 @@ namespace RT64 {
             lrx |= 3;
             lry |= 3;
         }
+
+#if defined(__ANDROID__)
+        static uint32_t androidFillRectCount = 0;
+        androidFillRectCount++;
+        if ((androidFillRectCount <= 64) || ((androidFillRectCount % 256) == 0)) {
+            RT64_ANDROID_RDP_LOG("RDP::fillRect #%u ul=(%d,%d) lr=(%d,%d) mode=0x%X otherH=0x%08X otherL=0x%08X",
+                androidFillRectCount,
+                ulx,
+                uly,
+                lrx,
+                lry,
+                mode,
+                otherMode.H,
+                otherMode.L);
+        }
+#endif
 
         drawRect(ulx, uly, lrx, lry, 0, 0, 0, 0, false, extAlignment);
     }

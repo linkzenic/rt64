@@ -6,6 +6,26 @@
 
 #include "xxHash/xxh3.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <cstring>
+#include <sys/system_properties.h>
+
+static bool rt64_raster_android_property_equals(const char *name, const char *expected) {
+    char value[PROP_VALUE_MAX] = {};
+    return __system_property_get(name, value) > 0 && std::strcmp(value, expected) == 0;
+}
+
+static bool rt64_raster_android_emulator_enabled() {
+    return rt64_raster_android_property_equals("ro.kernel.qemu", "1") ||
+        rt64_raster_android_property_equals("ro.boot.qemu", "1");
+}
+#else
+static bool rt64_raster_android_emulator_enabled() {
+    return false;
+}
+#endif
+
 #include "shaders/RenderParams.hlsli.rw.h"
 #include "shaders/RasterPSDynamic.hlsl.spirv.h"
 #include "shaders/RasterPSDynamicMS.hlsl.spirv.h"

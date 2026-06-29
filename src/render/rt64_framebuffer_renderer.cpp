@@ -16,6 +16,29 @@
 #include "rt64_descriptor_sets.h"
 #include "rt64_render_worker.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <cstring>
+#include <sys/system_properties.h>
+#define RT64_FB_ANDROID_LOG(...) ((void)0)
+
+static bool rt64_fb_android_property_equals(const char *name, const char *expected) {
+    char value[PROP_VALUE_MAX] = {};
+    return __system_property_get(name, value) > 0 && std::strcmp(value, expected) == 0;
+}
+
+static bool rt64_fb_android_emulator_enabled() {
+    return rt64_fb_android_property_equals("ro.kernel.qemu", "1") ||
+        rt64_fb_android_property_equals("ro.boot.qemu", "1");
+}
+#else
+#define RT64_FB_ANDROID_LOG(...) ((void)0)
+
+static bool rt64_fb_android_emulator_enabled() {
+    return false;
+}
+#endif
+
 // TODO: Move to shared.
 
 namespace interop {
@@ -511,7 +534,7 @@ namespace RT64 {
         if (fbStorage->colorTarget != nullptr) {
             switchToGraphicsPipeline();
         }
-        
+
         for (uint32_t i : rasterScene.instanceIndices) {
             const InstanceDrawCall &drawCall = instanceDrawCallVector[i];
             switch (drawCall.type) {
@@ -636,6 +659,7 @@ namespace RT64 {
                 // Do nothing.
                 break;
             }
+            RT64_FB_ANDROID_LOG("FramebufferRenderer::submitRasterScene instance end i=%u type=%u", i, static_cast<uint32_t>(drawCall.type));
         }
 
         // Mark targets for resolve.
@@ -1229,6 +1253,8 @@ namespace RT64 {
     }
 
     void FramebufferRenderer::recordFramebuffer(RenderWorker *worker, uint32_t framebufferIndex) {
+        RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer begin index=%u", framebufferIndex);
+
         // Submit all transition barriers first.
         thread_local std::vector<RenderTextureBarrier> startBarriers;
         startBarriers.clear();
@@ -1247,9 +1273,13 @@ namespace RT64 {
 
         startBarriers.emplace_back(RenderTextureBarrier(depthTarget->texture.get(), RenderTextureLayout::DEPTH_WRITE));
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, startBarriers);
+        RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer after start barriers count=%zu", startBarriers.size());
 
         bool depthState = false;
         worker->commandList->setFramebuffer(targetDrawCall.fbStorage->colorDepthWrite.get());
+        RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer after setFramebuffer scenes=%zu color=%d depth=%d",
+            targetDrawCall.sceneIndices.size(), colorTarget != nullptr ? 1 : 0, depthTarget != nullptr ? 1 : 0);
+
         for (const auto &pair : targetDrawCall.sceneIndices) {
 #       if RT_ENABLED
             if (pair.second) {
@@ -1295,8 +1325,13 @@ namespace RT64 {
 #       endif
             {
                 const RasterScene &rasterScene = targetDrawCall.rasterScenes[pair.first];
+                RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer before submitDepthAccess scene=%u instances=%zu",
+                    pair.first, rasterScene.instanceIndices.size());
                 submitDepthAccess(worker, targetDrawCall.fbStorage, false, depthState);
+                RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer after submitDepthAccess scene=%u", pair.first);
+
                 submitRasterScene(worker, framebuffer, targetDrawCall.fbStorage, rasterScene, depthState);
+                RT64_FB_ANDROID_LOG("FramebufferRenderer::recordFramebuffer after submitRasterScene scene=%u", pair.first);
             }
         }
     }

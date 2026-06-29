@@ -13,6 +13,8 @@
 #include "rt64_gbi_f3d.h"
 #include "rt64_gbi_f3dex.h"
 
+#define RT64_ANDROID_F3DEX2_LOG(...)
+
 namespace RT64 {
     namespace GBI_F3DEX2 {
         void setOtherMode(State *state, DisplayList **dl) {
@@ -62,6 +64,13 @@ namespace RT64 {
         
         void moveWord(State *state, DisplayList **dl) {
             uint8_t type = (*dl)->p0(16, 8);
+#if defined(__ANDROID__)
+            RT64_ANDROID_F3DEX2_LOG("f3dex2_moveWord begin type=0x%02X offset=0x%04X w0=0x%08X w1=0x%08X",
+                type,
+                (*dl)->p0(0, 16),
+                (*dl)->w0,
+                (*dl)->w1);
+#endif
             switch (type) {
             case F3DEX2_G_MW_FORCEMTX:
                 state->rsp->setModelViewProjChanged((*dl)->w1 == 0);
@@ -91,6 +100,9 @@ namespace RT64 {
                 assert(false && "Unimplemented moveWord command");
                 break;
             }
+#if defined(__ANDROID__)
+            RT64_ANDROID_F3DEX2_LOG("f3dex2_moveWord end type=0x%02X", type);
+#endif
         }
 
         void matrix(State *state, DisplayList **dl) {

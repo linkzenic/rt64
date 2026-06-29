@@ -7,6 +7,11 @@
 #include <cassert>
 #include <cinttypes>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <sys/system_properties.h>
+#endif
+
 #include "im3d/im3d.h"
 #include "im3d/im3d_math.h"
 #include "imgui/imgui.h"
@@ -26,6 +31,22 @@
 
 #define MI_INTR_DP          0x00000020
 #define MI_INTR_SP          0x00000001
+
+#ifdef __ANDROID__
+#define RT64_STATE_ANDROID_LOG(...) ((void)0)
+
+static bool rt64_android_property_equals(const char *name, const char *expected) {
+    char value[PROP_VALUE_MAX] = {};
+    return __system_property_get(name, value) > 0 && std::strcmp(value, expected) == 0;
+}
+
+static bool rt64_android_emulator_enabled() {
+    return rt64_android_property_equals("ro.kernel.qemu", "1") ||
+        rt64_android_property_equals("ro.boot.qemu", "1");
+}
+#else
+#define RT64_STATE_ANDROID_LOG(...) ((void)0)
+#endif
 
 namespace RT64 {
     const float ShiftScaleMap[] = {
@@ -763,8 +784,11 @@ namespace RT64 {
     }
 
     void State::fullSync() {
+        RT64_STATE_ANDROID_LOG("State::fullSync enter");
         flush();
+        RT64_STATE_ANDROID_LOG("State::fullSync after flush");
         submitFramebufferPair(FramebufferPair::FlushReason::ProcessDisplayListsEnd);
+        RT64_STATE_ANDROID_LOG("State::fullSync after submitFramebufferPair");
 
         // Append any framebuffer operations to the end of the last framebuffer pair.
         int workloadCursor = ext.workloadQueue->writeCursor;
@@ -1098,16 +1122,22 @@ namespace RT64 {
 
         // Start uploading the entire draw data for all the framebuffer pairs that were processed.
         workload.updateDrawDataRanges();
+        RT64_STATE_ANDROID_LOG("State::fullSync before uploadDrawData fbPairs=%u faceIndices=%zu tiles=%zu renderToRDRAM=%d",
+            workload.fbPairCount, workload.drawData.faceIndices.size(), workload.drawData.callTiles.size(), int(renderToRDRAM));
         workload.uploadDrawData(ext.framebufferGraphicsWorker, ext.drawDataUploader);
+        RT64_STATE_ANDROID_LOG("State::fullSync after uploadDrawData");
         workload.updateOutputBuffers(ext.framebufferGraphicsWorker);
+        RT64_STATE_ANDROID_LOG("State::fullSync after updateOutputBuffers");
 
         // Upload the transforms directly.
         ext.transformsUploader->submit(ext.framebufferGraphicsWorker, {
             { workload.drawData.viewProjTransforms.data(), workload.drawRanges.viewProjTransforms, sizeof(interop::float4x4), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.viewProjTransformsBuffer},
             { workload.drawData.worldTransforms.data(), workload.drawRanges.worldTransforms, sizeof(interop::float4x4), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.worldTransformsBuffer},
         });
+        RT64_STATE_ANDROID_LOG("State::fullSync after transforms submit");
 
         if (renderToRDRAM) {
+            RT64_STATE_ANDROID_LOG("State::fullSync before rspProcessor");
             // Run RSP processor.
             RSPProcessor::ProcessParams rspParams;
             rspParams.worker = ext.framebufferGraphicsWorker;
@@ -1117,6 +1147,7 @@ namespace RT64 {
             rspParams.prevFrameWeight = 0.0f;
             rspParams.curFrameWeight = 1.0f;
             rspProcessor->process(rspParams);
+            RT64_STATE_ANDROID_LOG("State::fullSync after rspProcessor");
         }
 
         // Switch the data ranges.
@@ -1127,9 +1158,12 @@ namespace RT64 {
 
         // Make sure pipelines for the ubershader have been created before rendering. This condition is executed regardless
         // of whether rendering to RAM is active so the workload queue is guaranteed to have the pipelines ready as well.
+        RT64_STATE_ANDROID_LOG("State::fullSync before shaderUber waitForPipelineCreation");
         ext.rasterShaderCache->shaderUber->waitForPipelineCreation();
+        RT64_STATE_ANDROID_LOG("State::fullSync after shaderUber waitForPipelineCreation");
 
         if (renderToRDRAM) {
+            RT64_STATE_ANDROID_LOG("State::fullSync renderToRDRAM begin");
             const hlslpp::float2 resolutionScale(1.0f, 1.0f);
             RT64::Framebuffer *colorFb = nullptr;
             RT64::Framebuffer *depthFb = nullptr;
@@ -1209,11 +1243,13 @@ namespace RT64 {
 
             uint32_t framebufferIndex = 0;
             auto renderSetup = [&]() {
+                RT64_STATE_ANDROID_LOG("State::fullSync renderSetup begin");
                 scratchFbChangePool.reset();
                 ext.framebufferGraphicsWorker->commandList->begin();
                 framebufferManager.resetOperations();
                 framebufferRenderer->resetFramebuffers(ext.framebufferGraphicsWorker, false, workload.extended.ditherNoiseStrength, renderTargetManager.multisampling);
                 framebufferIndex = 0;
+                RT64_STATE_ANDROID_LOG("State::fullSync renderSetup end");
             };
 
             thread_local std::unordered_set<RenderTarget *> resizedTargets;
@@ -1237,6 +1273,7 @@ namespace RT64 {
             };
 
             auto renderAndSynchronize = [&](uint32_t maxFramebufferPair) {
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize begin max=%u cursor=%u", maxFramebufferPair, framebufferPairCursor);
                 // Preprocess all the framebuffer operations.
                 uint32_t pairCursor = framebufferPairCursor;
                 while (pairCursor < maxFramebufferPair) {
@@ -1247,6 +1284,7 @@ namespace RT64 {
                 }
 
                 checkRenderTargetSafety(!resizedTargets.empty());
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after setupOperations");
 
                 // Add all framebuffers for rendering.
                 pairCursor = framebufferPairCursor;
@@ -1283,8 +1321,11 @@ namespace RT64 {
                 }
 
                 // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before texture upload wait A");
                 ext.textureCache->waitForGPUUploads();
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after texture upload wait A");
                 framebufferRenderer->updateTextureCache(ext.textureCache);
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after updateTextureCache");
 
                 thread_local std::vector<BufferUploader *> bufferUploaders;
                 bufferUploaders.clear();
@@ -1319,8 +1360,10 @@ namespace RT64 {
                 }
 
                 // Record all setup previous to drawing any of the recorded framebuffers.
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before recordSetup");
                 framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
                 framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after recordSetup");
 
                 // Record the command list for the framebuffer pairs.
                 pairCursor = framebufferPairCursor;
@@ -1441,10 +1484,18 @@ namespace RT64 {
                     pairCursor++;
                 }
 
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before commandList end");
                 ext.framebufferGraphicsWorker->commandList->end();
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after commandList end");
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before waitForUploaders");
                 framebufferRenderer->waitForUploaders();
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after waitForUploaders");
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before worker execute");
                 ext.framebufferGraphicsWorker->execute();
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after worker execute");
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize before worker wait");
                 ext.framebufferGraphicsWorker->wait();
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize after worker wait");
 
                 pairCursor = framebufferPairCursor;
                 while (pairCursor < maxFramebufferPair) {
@@ -1460,6 +1511,7 @@ namespace RT64 {
                 }
 
                 framebufferPairCursor = maxFramebufferPair;
+                RT64_STATE_ANDROID_LOG("State::fullSync renderAndSynchronize end max=%u", maxFramebufferPair);
             };
 
             // Before performing any rendering, render targets must be resized to their maximum possible size during the workload.
@@ -1507,9 +1559,11 @@ namespace RT64 {
             }
 
             checkRenderTargetSafety(true);
+            RT64_STATE_ANDROID_LOG("State::fullSync after initial render target safety");
 
             // Indicate to the texture cache the textures must not be deleted.
             ext.textureCache->incrementLock();
+            RT64_STATE_ANDROID_LOG("State::fullSync after texture lock");
 
             // Perform any preliminar setup before processing the framebuffer pairs.
             renderSetup();
@@ -1535,8 +1589,10 @@ namespace RT64 {
 
             // Render any remaining batches of framebuffers.
             renderAndSynchronize(workload.fbPairCount);
+            RT64_STATE_ANDROID_LOG("State::fullSync after final renderAndSynchronize");
         }
         else {
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM begin");
             // Process all tiles.
             for (uint32_t f = 0; f < workload.fbPairCount; f++) {
                 fullSyncFramebufferPairTiles(workload, workload.fbPairs[f], loadOpCursor, rdpTileCursor);
@@ -1551,11 +1607,22 @@ namespace RT64 {
             ext.drawDataUploader->commandListAfterBarriers(ext.framebufferGraphicsWorker);
             ext.transformsUploader->commandListAfterBarriers(ext.framebufferGraphicsWorker);
             ext.framebufferGraphicsWorker->commandList->end();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after commandList end");
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM before drawDataUploader wait");
             ext.drawDataUploader->wait();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after drawDataUploader wait");
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM before transformsUploader wait");
             ext.transformsUploader->wait();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after transformsUploader wait");
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM before worker execute");
             ext.framebufferGraphicsWorker->execute();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after worker execute");
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM before worker wait");
             ext.framebufferGraphicsWorker->wait();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after worker wait");
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM before texture upload wait");
             ext.textureCache->waitForGPUUploads();
+            RT64_STATE_ANDROID_LOG("State::fullSync non-renderToRDRAM after texture upload wait");
         }
 
         // Evict from the texture cache that are too old and should no longer be maintained.
@@ -1571,6 +1638,7 @@ namespace RT64 {
             framebufferManager.hashTracking(RDRAM);
 
             advanceFramebufferRenderer();
+            RT64_STATE_ANDROID_LOG("State::fullSync after advanceFramebufferRenderer");
 
             // Indicate the next time a display list is parsed, RDRAM should be checked.
             rdramCheckPending = true;
@@ -1748,8 +1816,21 @@ namespace RT64 {
         }
         
         // Advance the workload queue at the end of a full synchronization.
+        RT64_STATE_ANDROID_LOG("State::fullSync before advanceWorkload");
         advanceWorkload(workload, false);
+        RT64_STATE_ANDROID_LOG("State::fullSync after advanceWorkload");
+        RT64_STATE_ANDROID_LOG("State::fullSync before advanceToNextWorkload");
         ext.workloadQueue->advanceToNextWorkload();
+        RT64_STATE_ANDROID_LOG("State::fullSync after advanceToNextWorkload");
+#ifdef __ANDROID__
+        if (rt64_android_emulator_enabled()) {
+            RT64_STATE_ANDROID_LOG("State::fullSync emulator before workload queue idle wait workloadId=%llu",
+                static_cast<unsigned long long>(workloadId));
+            ext.workloadQueue->waitForWorkloadId(workloadId);
+            ext.workloadQueue->waitForIdle();
+            RT64_STATE_ANDROID_LOG("State::fullSync emulator after workload queue idle wait");
+        }
+#endif
 
         // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
         dlCpuProfiler.reset();

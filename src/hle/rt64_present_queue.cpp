@@ -9,7 +9,23 @@
 
 #include "rt64_workload_queue.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <atomic>
+#define ZELDA_ANDROID_PRESENT_LOG(...) ((void)0)
+#else
+#define ZELDA_ANDROID_PRESENT_LOG(...) ((void)0)
+#endif
+
 namespace RT64 {
+#ifdef __ANDROID__
+    static std::atomic<uint32_t> androidPresentTraceCounter { 0 };
+
+    static bool shouldTraceAndroidPresent(uint32_t index) {
+        return (index < 80) || ((index % 120) == 0);
+    }
+#endif
+
     // PresentQueue
 
     PresentQueue::PresentQueue() {
@@ -93,6 +109,27 @@ namespace RT64 {
     }
 
     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
+#ifdef __ANDROID__
+        const uint32_t androidPresentTraceIndex = androidPresentTraceCounter.fetch_add(1, std::memory_order_relaxed);
+        const bool androidTracePresent = shouldTraceAndroidPresent(androidPresentTraceIndex);
+        if (androidTracePresent) {
+            const hlslpp::uint2 androidPresentFbSize = present.screenVI.fbSize();
+            ZELDA_ANDROID_PRESENT_LOG(
+                "Present #%u begin presentId=%llu workloadId=%llu swapValid=%d visible=%d fb=0x%08X size=%ux%u siz=%u storage=%llu fbOps=%llu paused=%d",
+                androidPresentTraceIndex,
+                static_cast<unsigned long long>(present.presentId),
+                static_cast<unsigned long long>(present.workloadId),
+                swapChainValid ? 1 : 0,
+                present.screenVI.visible() ? 1 : 0,
+                present.screenVI.fbAddress(),
+                static_cast<unsigned>(androidPresentFbSize.x),
+                static_cast<unsigned>(androidPresentFbSize.y),
+                present.screenVI.fbSiz(),
+                static_cast<unsigned long long>(present.storage.size()),
+                static_cast<unsigned long long>(present.fbOperations.size()),
+                present.paused ? 1 : 0);
+        }
+#endif
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
@@ -145,6 +182,16 @@ namespace RT64 {
             }
 
             Framebuffer *presentFb = viFb;
+#ifdef __ANDROID__
+            if (androidTracePresent) {
+                ZELDA_ANDROID_PRESENT_LOG(
+                    "Present #%u vi lookup viewRDRAM=%d viFb=%p presentFb=%p",
+                    androidPresentTraceIndex,
+                    viewRDRAM ? 1 : 0,
+                    static_cast<void *>(viFb),
+                    static_cast<void *>(presentFb));
+            }
+#endif
             
             // Show the framebuffer the debugger has requested instead.
             if (present.debuggerFramebuffer.view) {
@@ -211,6 +258,20 @@ namespace RT64 {
                 else {
                     colorTarget = nullptr;
                 }
+#ifdef __ANDROID__
+                if (androidTracePresent) {
+                    ZELDA_ANDROID_PRESENT_LOG(
+                        "Present #%u framebuffer path presentFb=0x%08X %ux%u siz=%u interp=%d colorTarget=%p empty=%d",
+                        androidPresentTraceIndex,
+                        presentFb->addressStart,
+                        presentFb->width,
+                        presentFb->height,
+                        presentFb->siz,
+                        presentFb->interpolationEnabled ? 1 : 0,
+                        static_cast<void *>(colorTarget),
+                        (colorTarget == nullptr) ? 1 : (colorTarget->isEmpty() ? 1 : 0));
+                }
+#endif
 
                 if (!present.paused && (viHistory.top().vi != present.screenVI)) {
                     viHistory.pushVI(present.screenVI, viFb->width);
@@ -246,6 +307,19 @@ namespace RT64 {
                     if (colorFbChange != nullptr) {
                         colorTarget->copyFromChanges(ext.presentGraphicsWorker, *colorFbChange, scratchFb.width, scratchFb.height, 0, ext.shaderLibrary);
                     }
+#ifdef __ANDROID__
+                    if (androidTracePresent) {
+                        ZELDA_ANDROID_PRESENT_LOG(
+                            "Present #%u scratch path fb=0x%08X %ux%u storage=%llu change=%p colorTarget=%p",
+                            androidPresentTraceIndex,
+                            fbAddress,
+                            scratchFb.width,
+                            scratchFb.height,
+                            static_cast<unsigned long long>(present.storage.size()),
+                            static_cast<void *>(colorFbChange),
+                            static_cast<void *>(colorTarget));
+                    }
+#endif
                 }
 
                 scratchFbChangePool.reset();
@@ -301,12 +375,34 @@ namespace RT64 {
             const bool presentFrame = (i < framesToPresent) && swapChainValid;
             if (presentFrame) {
                 swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
+#ifdef __ANDROID__
+                if (androidTracePresent) {
+                    ZELDA_ANDROID_PRESENT_LOG(
+                        "Present #%u acquire frame=%d/%d result=%d index=%u",
+                        androidPresentTraceIndex,
+                        i,
+                        framesToPresent,
+                        swapChainValid ? 1 : 0,
+                        swapChainIndex);
+                }
+#endif
             }
 
             if (presentFrame && swapChainValid) {
                 // Draw the framebuffer with the VI renderer.
                 RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                 RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
+                if ((swapChainFramebuffer == nullptr) || (swapChainFramebuffer->getWidth() == 0) || (swapChainFramebuffer->getHeight() == 0)) {
+#ifdef __ANDROID__
+                    if (androidTracePresent) {
+                        ZELDA_ANDROID_PRESENT_LOG(
+                            "Present #%u skip invalid swapchain framebuffer fb=%p",
+                            androidPresentTraceIndex,
+                            static_cast<void *>(swapChainFramebuffer));
+                    }
+#endif
+                    continue;
+                }
                 RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
                 commandList->begin();
                 commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
@@ -339,6 +435,21 @@ namespace RT64 {
                         renderParams.textureHeight = colorTarget->height;
                     }
                 }
+#ifdef __ANDROID__
+                if (androidTracePresent) {
+                    ZELDA_ANDROID_PRESENT_LOG(
+                        "Present #%u draw swapFb=%p %ux%u colorTarget=%p texture=%p texSize=%ux%u frames=%d",
+                        androidPresentTraceIndex,
+                        static_cast<void *>(swapChainFramebuffer),
+                        swapChainFramebuffer->getWidth(),
+                        swapChainFramebuffer->getHeight(),
+                        static_cast<void *>(colorTarget),
+                        static_cast<void *>(renderParams.texture),
+                        renderParams.textureWidth,
+                        renderParams.textureHeight,
+                        framesToPresent);
+                }
+#endif
                 
                 commandList->setFramebuffer(swapChainFramebuffer);
                 commandList->clearColor();
@@ -401,6 +512,15 @@ namespace RT64 {
                 RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                 presentTimestamp = Timer::current();
                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
+#ifdef __ANDROID__
+                if (androidTracePresent) {
+                    ZELDA_ANDROID_PRESENT_LOG(
+                        "Present #%u presented index=%u result=%d",
+                        androidPresentTraceIndex,
+                        swapChainIndex,
+                        swapChainValid ? 1 : 0);
+                }
+#endif
                 presentProfiler.logAndRestart();
             }
         }

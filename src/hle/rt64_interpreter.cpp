@@ -6,6 +6,13 @@
 
 #include <cassert>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define RT64_ANDROID_INTERPRETER_LOG(...) ((void)0)
+#else
+#define RT64_ANDROID_INTERPRETER_LOG(...)
+#endif
+
 //#define DUMP_DISPLAY_LISTS
 
 namespace RT64 {
@@ -169,8 +176,39 @@ namespace RT64 {
         DisplayList *dl = dlStart;
         uint8_t opCode;
         GBIFunction func;
+#if defined(__ANDROID__)
+        uint32_t commandCount = 0;
+        constexpr uint32_t CommandLogInterval = 65536;
+        constexpr uint32_t CommandHardLimit = 262144;
+        constexpr uint32_t CommandTraceStart = 108;
+        constexpr uint32_t CommandTraceEnd = 140;
+#endif
         while (dl != nullptr) {
             opCode = (dl->w0 >> 24);
+#if defined(__ANDROID__)
+            const uint32_t currentCommandCount = ++commandCount;
+            const uint32_t currentOffset = static_cast<uint32_t>((dl - dlStart) * sizeof(DisplayList));
+            const bool traceCommand =
+                ((currentCommandCount >= CommandTraceStart) && (currentCommandCount <= CommandTraceEnd)) ||
+                ((currentCommandCount % CommandLogInterval) == 0);
+            if (traceCommand) {
+                RT64_ANDROID_INTERPRETER_LOG("hle_dl #%u before addr=0x%08X opcode=0x%02X w0=0x%08X w1=0x%08X",
+                    currentCommandCount,
+                    dlStartAdddress + currentOffset,
+                    opCode,
+                    dl->w0,
+                    dl->w1);
+            }
+            if (currentCommandCount > CommandHardLimit) {
+                RT64_ANDROID_INTERPRETER_LOG("hle_dl hard limit hit start=0x%08X last_offset=0x%08X opcode=0x%02X w0=0x%08X w1=0x%08X",
+                    dlStartAdddress,
+                    static_cast<uint32_t>((dl - dlStart) * sizeof(DisplayList)),
+                    opCode,
+                    dl->w0,
+                    dl->w1);
+                break;
+            }
+#endif
 
             if ((extendedOpCode != 0) && (opCode == extendedOpCode)) {
                 extendedFunction(state, &dl);
@@ -190,8 +228,24 @@ namespace RT64 {
                 }
             }
 
+#if defined(__ANDROID__)
+            if (traceCommand) {
+                RT64_ANDROID_INTERPRETER_LOG("hle_dl #%u after opcode=0x%02X next=%p",
+                    currentCommandCount,
+                    opCode,
+                    static_cast<void *>(dl));
+            }
+#endif
+
             if (dl != nullptr) {
                 dl++;
+#if defined(__ANDROID__)
+                if (traceCommand) {
+                    RT64_ANDROID_INTERPRETER_LOG("hle_dl #%u advanced next=%p",
+                        currentCommandCount,
+                        static_cast<void *>(dl));
+                }
+#endif
             }
         }
 

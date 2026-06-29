@@ -8,6 +8,29 @@
 
 #include "rt64_present_queue.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <cstring>
+#include <sys/system_properties.h>
+#define RT64_WORKLOAD_ANDROID_LOG(...) ((void)0)
+
+static bool rt64_workload_android_property_equals(const char *name, const char *expected) {
+    char value[PROP_VALUE_MAX] = {};
+    return __system_property_get(name, value) > 0 && std::strcmp(value, expected) == 0;
+}
+
+static bool rt64_workload_android_emulator_enabled() {
+    return rt64_workload_android_property_equals("ro.kernel.qemu", "1") ||
+        rt64_workload_android_property_equals("ro.boot.qemu", "1");
+}
+#else
+#define RT64_WORKLOAD_ANDROID_LOG(...) ((void)0)
+
+static bool rt64_workload_android_emulator_enabled() {
+    return false;
+}
+#endif
+
 #define ENABLE_HIGH_RESOLUTION_RENDERER 1
 
 namespace RT64 {
@@ -300,7 +323,10 @@ namespace RT64 {
         uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts)
     {
 #   if ENABLE_HIGH_RESOLUTION_RENDERER
+        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame begin curWorkloads=%zu prevMatched=%d targetRate=%u rt=%d",
+            curFrame.workloads.size(), prevFrame.matched ? 1 : 0, workloadConfig.targetRate, workloadConfig.raytracingEnabled ? 1 : 0);
         std::scoped_lock<std::mutex> managerLock(ext.sharedResources->workloadMutex);
+        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after workloadMutex lock");
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
@@ -311,6 +337,7 @@ namespace RT64 {
         const bool processProjections = aspectRatioAdjustment || prevFrame.matched|| curFrame.isDebuggerCameraEnabled(*this);
         bool uploadProjections = false;
         if (processProjections) {
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before projection process");
             ProjectionProcessor::ProcessParams projParams;
             projParams.worker = ext.workloadGraphicsWorker;
             projParams.workloadQueue = this;
@@ -322,11 +349,13 @@ namespace RT64 {
             projectionProcessor.process(projParams);
             projectionProcessor.upload(projParams);
             uploadProjections = true;
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after projection process");
         }
 
         const bool processTransforms = prevFrame.matched;
         bool uploadTransforms = false;
         if (processTransforms) {
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before transform process");
             TransformProcessor::ProcessParams transformParams;
             transformParams.worker = ext.workloadGraphicsWorker;
             transformParams.workloadQueue = this;
@@ -337,10 +366,12 @@ namespace RT64 {
             transformProcessor.process(transformParams);
             transformProcessor.upload(transformParams);
             uploadTransforms = true;
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after transform process");
         }
 
         bool uploadTiles = false;
         if (interpolateTiles) {
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before tile process");
             TileProcessor::ProcessParams tileParams;
             tileParams.worker = ext.workloadGraphicsWorker;
             tileParams.workloadQueue = this;
@@ -351,10 +382,12 @@ namespace RT64 {
             tileProcessor.process(tileParams);
             tileProcessor.upload(tileParams);
             uploadTiles = true;
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after tile process");
         }
 
         bool uploadLookAts = false;
         if (interpolateLookAts) {
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before lookAt process");
             LookAtProcessor::ProcessParams lookAtParams;
             lookAtParams.worker = ext.workloadGraphicsWorker;
             lookAtParams.workloadQueue = this;
@@ -365,6 +398,7 @@ namespace RT64 {
             lookAtProcessor.process(lookAtParams);
             lookAtProcessor.upload(lookAtParams);
             uploadLookAts = true;
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after lookAt process");
         }
 
         // Reset the max height tracking for all active framebuffers.
@@ -376,10 +410,13 @@ namespace RT64 {
 
         for (uint32_t w = 0; w < curFrame.workloads.size(); w++) {
             Workload &workload = workloads[curFrame.workloads[w]];
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame workload begin index=%u cursor=%u fbPairs=%u gameCalls=%u gpuTiles=%zu",
+                w, curFrame.workloads[w], workload.fbPairCount, workload.gameCallCount, workload.drawData.gpuTiles.size());
 
             // There's no guarantee the RSP was processed if framebuffers were not rendered.
             const bool processRSP = true;
             if (processRSP) {
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before RSP process");
                 workload.resetRSPOutputBuffers();
 
                 RSPProcessor::ProcessParams rspParams;
@@ -390,10 +427,12 @@ namespace RT64 {
                 rspParams.prevFrameWeight = prevFrameWeight;
                 rspParams.curFrameWeight = curFrameWeight;
                 rspProcessor->process(rspParams);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after RSP process");
             }
 
             const bool processWorldVertices = prevFrame.matched;
             if (processWorldVertices) {
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before vertex process");
                 workload.resetWorldOutputBuffers();
 
                 VertexProcessor::ProcessParams vertexParams;
@@ -404,6 +443,7 @@ namespace RT64 {
                 vertexParams.curFrameWeight = curFrameWeight;
                 vertexParams.prevFrameWeight = prevFrameWeight;
                 vertexProcessor->process(vertexParams);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after vertex process");
             }
 
             hlslpp::float2 fixedResScale;
@@ -513,6 +553,7 @@ namespace RT64 {
             colorDepthPairs.clear();
 
             const uint32_t fbPairCount = (debuggerRenderer.framebufferIndex >= 0) ? (debuggerRenderer.framebufferIndex + 1) : workload.fbPairCount;
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before resize/setup fbPairCount=%u", fbPairCount);
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
 #           if RT_ENABLED
@@ -578,6 +619,7 @@ namespace RT64 {
                 fbManager.setupOperations(ext.workloadGraphicsWorker, fbPair.startFbOperations, fixedResScale, targetManager, &resizedTargets);
                 fbManager.setupOperations(ext.workloadGraphicsWorker, fbPair.endFbOperations, fixedResScale, targetManager, &resizedTargets);
             }
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after resize/setup resizedTargets=%zu", resizedTargets.size());
 
             // Make sure all depth targets are at least bigger than their corresponding color targets.
             for (auto colorDepthPair : colorDepthPairs) {
@@ -600,6 +642,7 @@ namespace RT64 {
 
             // Reset the texture cache vectors for the framebuffer renderer.
             framebufferRenderer->updateTextureCache(ext.textureCache);
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after texture cache update");
 
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
@@ -609,7 +652,9 @@ namespace RT64 {
             // Add all framebuffer pairs to the framebuffer renderer and setup the operations.
             scratchFbChangePool.reset();
             fbManager.resetOperations();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before resetFramebuffers");
             framebufferRenderer->resetFramebuffers(ext.workloadGraphicsWorker, ubershadersVisible, workload.extended.ditherNoiseStrength, targetManager.multisampling);
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after resetFramebuffers");
 
 #       if RT_ENABLED
             if (workloadConfig.raytracingEnabled) {
@@ -620,6 +665,8 @@ namespace RT64 {
             for (uint32_t f = 0; f < fbPairCount; f++) {
                 const FramebufferPair &fbPair = workload.fbPairs[f];
                 if (getTargetsFromPair(f)) {
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before addFramebuffer f=%u target=%ux%u native=%ux%u",
+                        f, targetWidth, targetHeight, nativeColorWidth, nativeColorHeight);
                     RenderFramebufferStorage &fbStorage = renderFramebufferManager->get(fbKey, colorTarget, (depthTarget != nullptr) ? depthTarget : dummyDepthTarget.get());
                     FramebufferRenderer::DrawParams drawParams;
                     drawParams.worker = ext.workloadGraphicsWorker;
@@ -650,6 +697,7 @@ namespace RT64 {
                     drawParams.postBlendNoiseNegative = workloadConfig.postBlendNoiseNegative;
                     drawParams.maxGameCall = std::min(gameCallCountMax - gameCallCursor, fbPair.gameCallCount);
                     framebufferRenderer->addFramebuffer(drawParams);
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after addFramebuffer f=%u", f);
                 }
                 
                 gameCallCursor += fbPair.gameCallCount;
@@ -657,6 +705,7 @@ namespace RT64 {
 
             // Create all GPU tile mappings and upload them.
             if (!workload.drawData.gpuTiles.empty()) {
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before createGPUTiles count=%zu", workload.drawData.gpuTiles.size());
                 std::pair<size_t, size_t> gpuTileRange;
                 gpuTileRange.first = 0;
                 gpuTileRange.second = workload.drawData.gpuTiles.size();
@@ -669,6 +718,7 @@ namespace RT64 {
                 });
 
                 bufferUploaders.emplace_back(ext.workloadTilesUploader);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after createGPUTiles");
             }
 
             if (uploadVelocity) {
@@ -707,16 +757,24 @@ namespace RT64 {
             }
 #       endif
 
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before workerMutex lock uploaders=%zu", bufferUploaders.size());
             workerMutex.lock();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after workerMutex lock");
             ext.workloadGraphicsWorker->commandList->begin();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after commandList begin");
             ext.workloadGraphicsWorker->commandList->resetQueryPool(queryPool.get(), 0, 2);
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before endFramebuffers");
             framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after endFramebuffers");
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before recordSetup");
             framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after recordSetup");
             
             // Record all framebuffer pairs.
             uint32_t framebufferIndex = 0;
             for (uint32_t f = 0; f < fbPairCount; f++) {
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before record fbPair f=%u", f);
                 const FramebufferPair &fbPair = workload.fbPairs[f];
                 bool validTargets = getTargetsFromPair(f);
                 fbManager.recordOperations(ext.workloadGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
@@ -845,14 +903,23 @@ namespace RT64 {
                 
                 fbManager.recordOperations(ext.workloadGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
                     fbPair.endFbOperations, targetManager, fixedResScale, f, workload.submissionFrame);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after record fbPair f=%u", f);
             }
 
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
             ext.workloadGraphicsWorker->commandList->end();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after commandList end");
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before waitForUploaders");
             framebufferRenderer->waitForUploaders();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after waitForUploaders");
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before worker execute");
             ext.workloadGraphicsWorker->execute();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after worker execute");
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame before worker wait");
             ext.workloadGraphicsWorker->wait();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after worker wait");
             workerMutex.unlock();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame after workerMutex unlock");
 
             // Update the GPU profiler with the results from the timestamps of the frame.
             queryPool->queryResults();
@@ -861,6 +928,7 @@ namespace RT64 {
 
             // Indicate to the texture cache it's safe to delete the textures if no locks are active.
             ext.textureCache->decrementLock();
+            RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame workload end index=%u", w);
         }
 
         if ((overrideTarget != nullptr) && !usingMSAA) {
@@ -871,6 +939,7 @@ namespace RT64 {
         rendererCPUProfiler.end();
         rendererCPUProfiler.log();
         rendererCPUProfiler.reset();
+        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadRenderFrame end");
 #   endif
     }
 
@@ -880,12 +949,14 @@ namespace RT64 {
     }
 
     void WorkloadQueue::threadAdvanceWorkloadId(uint64_t newWorkloadId) {
+        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadAdvanceWorkloadId begin id=%llu", static_cast<unsigned long long>(newWorkloadId));
         {
             std::scoped_lock<std::mutex> cursorLock(workloadIdMutex);
             workloadId = newWorkloadId;
         }
 
         workloadIdCondition.notify_all();
+        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::threadAdvanceWorkloadId end id=%llu", static_cast<unsigned long long>(newWorkloadId));
     }
 
     void WorkloadQueue::renderThreadLoop() {
@@ -908,13 +979,18 @@ namespace RT64 {
                 if (threadsRunning) {
                     processCursor = threadCursor;
                     threadCursor = (threadCursor + 1) % workloads.size();
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop got cursor=%d writeCursor=%u nextThreadCursor=%u",
+                        processCursor, writeCursor, threadCursor);
                 }
             }
 
             if (processCursor >= 0) {
                 std::unique_lock<std::mutex> threadLock(threadMutex);
                 Workload &workload = workloads[processCursor];
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before waitForPresentId cursor=%d presentId=%llu workloadId=%llu",
+                    processCursor, static_cast<unsigned long long>(workload.presentId), static_cast<unsigned long long>(workload.workloadId));
                 ext.presentQueue->waitForPresentId(workload.presentId);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after waitForPresentId cursor=%d", processCursor);
 
                 if (!threadsRunning) {
                     continue;
@@ -922,7 +998,10 @@ namespace RT64 {
 
                 ElapsedTimer workloadTimer;
                 workloadProfiler.start();
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before configuration update");
                 threadConfigurationUpdate(workload.viFbSize, workloadConfig);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after configuration update vi=%ux%u targetRate=%u",
+                    workload.viFbSize[0], workload.viFbSize[1], workloadConfig.targetRate);
 
                 // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                 if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
@@ -934,7 +1013,10 @@ namespace RT64 {
                 GameFrame &curFrame = gameFrames[curFrameIndex];
                 const GameFrame &prevFrame = gameFrames[prevFrameIndex];
                 uint32_t workloadIndex = processCursor;
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before curFrame.set");
                 curFrame.set(*this, &workloadIndex, 1);
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after curFrame.set curIndex=%u prevIndex=%u matched=%d",
+                    curFrameIndex, prevFrameIndex, curFrame.matched ? 1 : 0);
 
                 // Detect the color image to interpolate for this workload.
                 RenderTargetKey interpolationTargetKey;
@@ -989,9 +1071,12 @@ namespace RT64 {
                 bool tileInterpolationUsed = false;
                 bool lookAtInterpolationUsed = false;
                 if (requiresFrameMatching) {
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before frame match");
                     matchingProfiler.reset();
                     matchingProfiler.start();
                     curFrame.match(ext.workloadGraphicsWorker, *this, prevFrame, ext.workloadVelocityUploader, velocityUploaderUsed, tileInterpolationUsed, lookAtInterpolationUsed);
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after frame match velocity=%d tile=%d lookAt=%d",
+                        velocityUploaderUsed ? 1 : 0, tileInterpolationUsed ? 1 : 0, lookAtInterpolationUsed ? 1 : 0);
                     matchingProfiler.end();
                     matchingProfiler.log();
 
@@ -1075,6 +1160,7 @@ namespace RT64 {
                 uint32_t framesRendered = 0;
                 int64_t renderTimeTotalMicro = 0;
                 for (uint32_t frame = 0; (frame < displayFrames) && !skipWorkloadNow; frame++) {
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop frame begin frame=%u displayFrames=%u", frame, displayFrames);
                     // Evaluate if this frame should be skipped. Measure the current time and compare it to what frame is estimated should be have been rendered by now.
                     if ((frame > 0) && (originalTimeMicro > 0)) {
                         const int64_t currentTimeMicro = workloadTimer.elapsedMicroseconds() - setupTimeMicro;
@@ -1127,15 +1213,20 @@ namespace RT64 {
                     }
 
                     int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before threadRenderFrame frame=%u", frame);
                     threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
                         interpolationTargetKey, interpolationTargetFbPairIndex, overrideTarget, overrideModifier, velocityUploaderUsed, uploadExtras, tileInterpolationUsed, lookAtInterpolationUsed);
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after threadRenderFrame frame=%u", frame);
 
                     // Add total time the frame took to render.
                     renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
 
                     // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                     if (frame == 0) {
+                        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before threadAdvanceWorkloadId frame=%u id=%llu",
+                            frame, static_cast<unsigned long long>(workload.workloadId));
                         threadAdvanceWorkloadId(workload.workloadId);
+                        RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after threadAdvanceWorkloadId frame=%u", frame);
                     }
 
                     // For every additional frame, we increase the frames available and notify the present queue.
@@ -1173,15 +1264,19 @@ namespace RT64 {
                 }
 
                 threadConfigurationValidate();
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after configuration validate");
 
                 if (!workload.paused) {
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop before advance barrier");
                     threadAdvanceBarrier();
+                    RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop after advance barrier");
                 }
 
                 processCursor = -1;
                 workloadProfiler.end();
                 workloadProfiler.log();
                 workloadProfiler.reset();
+                RT64_WORKLOAD_ANDROID_LOG("WorkloadQueue::renderThreadLoop workload complete");
             }
         }
     }
